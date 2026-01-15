@@ -45,6 +45,15 @@ https://my.home-assistant.io/redirect/hacs_repository/?owner=drmogie&repository=
 3. Install
 4. Refresh the browser (hard refresh recommended)
 
+#### Manual HACS steps (optional)
+1. Open **HACS**
+2. Go to **Frontend**
+3. Open the three-dot menu (⋮) → **Custom repositories**
+4. Add:
+   - **Repository:** `https://github.com/drmogie/auto-navigate-card`
+   - **Category:** `Dashboard`
+5. Install **Auto Navigate Card**
+
 ---
 
 ## Add the Resource (Required)
