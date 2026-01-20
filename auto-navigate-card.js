@@ -1,6 +1,6 @@
 import { LitElement, html, css } from "https://unpkg.com/lit@2.8.0/index.js?module";
 
-const AUTO_NAVIGATE_CARD_VERSION = "2026.01-23";
+const AUTO_NAVIGATE_CARD_VERSION = "2026.01-24";
 
 class AutoNavigateCard extends LitElement {
   static get properties() {
@@ -60,6 +60,10 @@ class AutoNavigateCard extends LitElement {
 
     this._idleTimer = null;
     this._navTimer = null;
+
+    // Accurate timing anchors (ms) so countdown progress matches navigation_delay_time exactly
+    this._navStartAt = 0;
+    this._tickMs = 100;
 
     this._pointerStart = false;
     this._pointerMoved = false;
@@ -202,6 +206,8 @@ class AutoNavigateCard extends LitElement {
     this._idleElapsed = 0;
     this._navElapsed = 0;
 
+    this._navStartAt = 0;
+
     this._stopReason = reason;
     this.requestUpdate();
   }
@@ -271,7 +277,7 @@ class AutoNavigateCard extends LitElement {
       return;
     }
 
-    // Pause -> freeze timers, record debug reason
+    // Pause -> freeze timers
     this._paused = true;
     this._clearTimers();
     this._stopReason = "paused by user";
@@ -287,10 +293,13 @@ class AutoNavigateCard extends LitElement {
     this._paused = false;
     this._stopped = false;
 
+    // IMPORTANT: while idle, we do NOT show idle timeout in progress bar
     this._progress = 0;
+
     this._remaining = 0;
     this._idleElapsed = 0;
     this._navElapsed = 0;
+    this._navStartAt = 0;
 
     this._stopReason = "";
 
@@ -312,12 +321,23 @@ class AutoNavigateCard extends LitElement {
     this._navTimer = null;
   }
 
+  // Idle timer stays as a simple seconds counter; does NOT drive the progress bar.
   _startIdleTimer() {
+    const timeout = Math.max(0, Number(this._config.idle_timeout || 0));
+    this._idleElapsed = 0;
+
+    if (timeout <= 0) {
+      this._idle = false;
+      this._clearTimers();
+      this._startNavigationCountdown();
+      return;
+    }
+
     this._idleTimer = setInterval(() => {
       if (this._paused || this._stopped) return;
 
       this._idleElapsed++;
-      if (this._idleElapsed >= Number(this._config.idle_timeout || 0)) {
+      if (this._idleElapsed >= timeout) {
         this._idle = false;
         this._clearTimers();
         this._startNavigationCountdown();
@@ -327,11 +347,23 @@ class AutoNavigateCard extends LitElement {
     }, 1000);
   }
 
+  /**
+   * FIX: navigation_delay_time desync
+   * - progress and remaining are derived from Date.now() elapsed time
+   * - updates frequently so the bar looks perfectly aligned
+   * - forces 100% state to paint before navigating
+   */
   _startNavigationCountdown() {
-    const total = Number(this._config.navigation_delay_time || 0);
+    const total = Math.max(0, Number(this._config.navigation_delay_time || 0));
     this._remaining = total;
 
+    // Reset UI for countdown start
+    this._navStartAt = Date.now();
+    this._navElapsed = 0;
+    this._progress = 0;
+
     if (total <= 0) {
+      this._progress = 1;
       this._navigate();
       return;
     }
@@ -339,27 +371,37 @@ class AutoNavigateCard extends LitElement {
     this._navTimer = setInterval(() => {
       if (this._paused || this._stopped) return;
 
-      this._remaining--;
-      this._navElapsed++;
-      this._progress = Math.max(0, Math.min(1, 1 - this._remaining / total));
+      const now = Date.now();
+      const elapsed = Math.max(0, (now - this._navStartAt) / 1000);
 
-      if (this._remaining <= 0) {
+      // integer seconds for debug display only
+      this._navElapsed = Math.min(total, Math.floor(elapsed));
+
+      const remaining = Math.max(0, total - elapsed);
+      this._remaining = Math.ceil(remaining);
+
+      // progress derived from elapsed so it hits 100% exactly at total seconds
+      this._progress = Math.max(0, Math.min(1, elapsed / total));
+
+      if (elapsed >= total) {
+        // Ensure full bar is rendered before navigation
+        this._progress = 1;
+        this._remaining = 0;
+        this.requestUpdate();
+
         this._clearTimers();
-        this._navigate();
+        setTimeout(() => {
+          if (this._paused || this._stopped) return;
+          this._navigate();
+        }, 0);
+        return;
       }
 
       this.requestUpdate();
-    }, 1000);
+    }, this._tickMs);
   }
 
-  /* ───────── Navigation rules ─────────
-     PATH:
-       - null/undefined/empty -> STOP (same as current path)
-       - same as current path -> STOP
-       - any other path -> NAVIGATE
-     BACK:
-       - record action; loop detector can STOP if A->B->A bounce
-  ───────── */
+  /* ───────── Navigation rules ───────── */
 
   _navigate() {
     if (this._paused) return;
@@ -414,7 +456,11 @@ class AutoNavigateCard extends LitElement {
     if (this._config.navigation_mode === "none") return "";
 
     const status = this._statusLabel();
-    const isRunning = !this._idle && !this._paused && !this._stopped;
+
+    // While idle, do NOT show idle timeout in the progress bar label.
+    if (this._idle) return status;
+
+    const isRunning = !this._paused && !this._stopped;
     if (!isRunning) return status;
 
     const modeText = this._modeLabel();
@@ -515,7 +561,8 @@ class AutoNavigateCard extends LitElement {
 
     .progress {
       height: 100%;
-      transition: width 1s linear, background-color 0.15s linear;
+      /* match update cadence so visuals never “lag behind” */
+      transition: width 0.1s linear, background-color 0.15s linear;
     }
 
     .progress-label {
